@@ -1,22 +1,24 @@
 <template>
   <div class="map-wrapper">
-    <l-map ref="mapRef" class="map" :zoom="7" :center="[36.5, 127.5]" @ready="onMapReady">
+    <l-map ref="mapRef" class="map" :zoom="7" :center="[36.5, 127.5]" 
+    :zoomAnimation="false"@ready="onMapReady">
       <l-tile-layer :url="tileUrl" :attribution="tileAttribution" />
     </l-map>
 
-    <!-- 📦 우측 슬라이드 카드 -->
     <transition name="slide">
       <div v-if="selectedFlight" class="flight-card">
-        <h3>✈️ 항공편 상세 정보</h3>
+        <h3>항공편 상세 정보</h3>
         <p><strong>항공편명:</strong> {{ selectedFlight.flight_iata }}</p>
         <p><strong>항공사:</strong> {{ selectedFlight.airline }}</p>
         <p><strong>항공기:</strong> {{ selectedFlight.aircraft }} ({{ selectedFlight.aircraft_reg }})</p>
         <p><strong>출발지:</strong> {{ selectedFlight.departure.city }} - {{ selectedFlight.departure.airport }}</p>
         <p><strong>출발시간:</strong> {{ selectedFlight.departure.time }}</p>
+        <!-- <p><strong>출발지 좌표:</strong> {{ selectedFlight.departure.latitude }}, {{ selectedFlight.departure.longitude }}</p> -->
         <p><strong>도착지:</strong> {{ selectedFlight.arrival.city }} - {{ selectedFlight.arrival.airport }}</p>
         <p><strong>도착시간:</strong> {{ selectedFlight.arrival.time }}</p>
-        <p><strong>상태:</strong> {{ selectedFlight.status }}</p>
-        <button @click="selectedFlight = null">닫기</button>
+        <!-- <p><strong>도착지 좌표:</strong> {{ selectedFlight.arrival.latitude }}, {{ selectedFlight.arrival.longitude }}</p> -->
+        <p><strong>상황:</strong> {{ selectedFlight.status }}</p>
+        <button @click="clearFlightSelection">닫기</button>
       </div>
     </transition>
   </div>
@@ -43,13 +45,30 @@ export default {
       mapInstance: null,
       markerMap: new Map(),
       tileUrl: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      tileAttribution:
-        '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors',
+      tileAttribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors',
       timer: null,
-      selectedFlight: null
+      selectedFlight: null,
+      flightPath: null,
+      depMarker: null,
+      arrMarker: null
     };
   },
   methods: {
+    clearFlightSelection() {
+      this.selectedFlight = null;
+      if (this.flightPath) {
+        this.mapInstance.removeLayer(this.flightPath);
+        this.flightPath = null;
+      }
+      if (this.depMarker) {
+        this.mapInstance.removeLayer(this.depMarker);
+        this.depMarker = null;
+      }
+      if (this.arrMarker) {
+        this.mapInstance.removeLayer(this.arrMarker);
+        this.arrMarker = null;
+      }
+    },
     onMapReady(map) {
       this.mapInstance = map;
       this.fetchPlanes();
@@ -59,7 +78,6 @@ export default {
       const frames = 30;
       const start = marker.getLatLng();
       let frame = 0;
-
       const animate = () => {
         frame++;
         const lat = start.lat + (targetLatLng[0] - start.lat) * (frame / frames);
@@ -71,19 +89,59 @@ export default {
       requestAnimationFrame(animate);
     },
     async fetchFlightDetails(flight_iata) {
-      try {
-        const res = await axios.get(`/api/flight?flight_iata=${flight_iata}`);
-        this.selectedFlight = res.data;
-      } catch (e) {
-        console.error("❌ 상세 정보 조회 실패:", e);
-        this.selectedFlight = null;
-      }
-    },
+  if (this.selectedFlight?.flight_iata === flight_iata) return;
+  try {
+    const res = await axios.get(`/api/flight?flight_iata=${flight_iata}`);
+    const flight = res.data;
+    this.selectedFlight = flight;
+
+    const depLat = flight.departure?.latitude;
+    const depLng = flight.departure?.longitude;
+    const arrLat = flight.arrival?.latitude;
+    const arrLng = flight.arrival?.longitude;
+
+    if (depLat == null || depLng == null || arrLat == null || arrLng == null) {
+      console.warn("출발지 또는 도착지 좌표 없음");
+      return;
+    }
+
+    // 기존 레이어 제거
+    if (this.flightPath) this.mapInstance.removeLayer(this.flightPath);
+    if (this.depMarker) this.mapInstance.removeLayer(this.depMarker);
+    if (this.arrMarker) this.mapInstance.removeLayer(this.arrMarker);
+
+    // 비행 경로 표시
+    this.flightPath = L.polyline([[depLat, depLng], [arrLat, arrLng]], {
+      color: "blue",
+      weight: 3,
+      dashArray: "6, 6"
+    }).addTo(this.mapInstance);
+
+    // 출발지 마커
+    this.depMarker = L.marker([depLat, depLng], {
+      icon: L.divIcon({ className: 'airport-marker', html: '🛫' })
+    }).addTo(this.mapInstance);
+
+    // 도착지 마커
+    this.arrMarker = L.marker([arrLat, arrLng], {
+      icon: L.divIcon({ className: 'airport-marker', html: '🛬' })
+    }).addTo(this.mapInstance);
+
+    // 마커 추가 완료 후 fitBounds 지연 적용
+    setTimeout(() => {
+      this.mapInstance.fitBounds([[depLat, depLng], [arrLat, arrLng]]);
+    }, 50); // 또는 Vue.nextTick(() => {...}) 도 가능
+
+  } catch (e) {
+    console.error("상세 정보 조회 실패:", e);
+    alert("조회 할 수 없는 항공기 입니다.");
+    this.selectedFlight = null;
+  }
+},
+
     async fetchPlanes() {
       try {
-        const res = await axios.get(
-          "/opensky/api/states/all?lamin=33&lamax=39.5&lomin=124.5&lomax=131.5"
-        );
+        const res = await axios.get("/opensky/api/states/all?lamin=33&lamax=39.5&lomin=124.5&lomax=131.5");
         const states = res.data.states || [];
         const activeIcaoSet = new Set();
 
@@ -109,25 +167,13 @@ export default {
               interactive: true
             });
 
-            // ✨ Tooltip: 마우스 오버 시 간략 정보 표시
             marker.bindTooltip(
-              `
-              <strong>${callsign || "알 수 없음"}</strong><br/>
-              국적: ${origin}<br/>
-              고도: ${Math.round(altitude)} m
-              `,
-              {
-                direction: "top",
-                permanent: false,
-                sticky: true
-              }
+              `<strong>${callsign || "알 수 없음"}</strong><br/>국적: ${origin}<br/>고도: ${Math.round(altitude)} m`,
+              { direction: "top", permanent: false, sticky: true }
             );
 
-            // ✅ 클릭 시 슬라이드 UI
             marker.on("click", () => {
-              if (callsign) {
-                this.fetchFlightDetails(callsign);
-              }
+              if (callsign) this.fetchFlightDetails(callsign);
             });
 
             marker.addTo(this.mapInstance);
@@ -139,9 +185,9 @@ export default {
           marker.setOpacity(activeIcaoSet.has(icao24) ? 1 : 0.3);
         });
 
-        console.log("✅ 항공기 수신 완료:", states.length);
+        console.log("항공기 수신 완료:", states.length);
       } catch (e) {
-        console.error("🚫 항공기 정보 로드 실패:", e);
+        console.error("항공기 정보 로드 실패:", e);
       }
     }
   },
@@ -182,5 +228,9 @@ export default {
 .slide-leave-to {
   transform: translateX(100%);
   opacity: 0;
+}
+.airport-marker {
+  font-size: 18px;
+  font-weight: bold;
 }
 </style>
